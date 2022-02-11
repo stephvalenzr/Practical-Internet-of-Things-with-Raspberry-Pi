@@ -1,0 +1,299 @@
+# Practical Internet of Things
+# Final Project
+# "Smart Garbage Bin"
+# by Jennifer Louisa Dück and Matt Stephanie Ramos
+
+# Import all the needed modules
+
+from gpiozero import DistanceSensor
+from gpiozero import TrafficLights
+import RPi.GPIO as GPIO
+import paho.mqtt.client as mqtt
+import http.client
+import urllib
+from PIL import ImageDraw
+from PIL import ImageFont
+from PIL import Image
+import Adafruit_SSD1306
+import threading
+import time
+from time import sleep
+
+# Raspberry Pi Pin Configuration
+
+sensor = DistanceSensor(22,17)
+signal = TrafficLights(26, 19, 13)
+RST = None
+
+# Initializing the OLED Screen
+
+disp = Adafruit_SSD1306.SSD1306_128_32(rst=RST, i2c_bus=1)
+disp.begin()
+width = disp.width
+height = disp.height
+
+# Initializing the Traffic Lights
+
+signal.green.off()
+signal.amber.off()
+signal.red.off()
+
+# ThingSpeak
+key = "4TML84QZ6S1S3LO5" #API key
+
+# Global Variables
+
+distance_cm = 0
+percent = 0
+
+#
+def on_connect(client, userdata, flags, rc):
+    m="Connected flags: " + str(flags) + " result code: " + str(rc) + " client1_id: " + str(client)
+    print(m)
+    
+# MQTT
+broker_address = "192.168.0.36"
+
+
+# Defining the needed Threads
+# Thread for Measuring the Distance
+class ThreadDistance(threading.Thread):
+    def __init__(self, threadID, name):
+        threading.Thread.__init__(self)
+        self.threadID = threadID
+        self.name = name
+    def run(self):
+        print("Starting " + self.name)
+        task_distance(self.name)
+        print("Existing " + self.name)
+        
+# Thread for Creating the Image on an OLED Screen
+class ThreadOled(threading.Thread):
+    def __init__(self, threadID, name):
+        threading.Thread.__init__(self)
+        self.threadID = threadID
+        self.name = name
+    def run(self):
+        print("Starting " + self.name)
+        task_oled(self.name)
+        print("Existing " + self.name)
+        
+# Thread for Activating the Traffic Lights to show the status of the Trash Bin
+class ThreadLights(threading.Thread):
+    def __init__(self, threadID, name):
+        threading.Thread.__init__(self)
+        self.threadID = threadID
+        self.name = name
+    def run(self):
+        print("Starting " + self.name)
+        task_lights(self.name)
+        print("Existing " + self.name)
+
+# Thread for Sending Data to ThingSpeak
+class ThreadThingSpeak(threading.Thread):
+    def __init__(self, threadID, name):
+        threading.Thread.__init__(self)
+        self.threadID = threadID
+        self.name = name
+    def run(self):
+        print("Starting " + self.name)
+        task_thingspeak(self.name)
+        print("Existing " + self.name)
+
+# Thread for Sending Data with MQTT
+class ThreadMQTT(threading.Thread):
+    def __init__(self, threadID, name):
+        threading.Thread.__init__(self)
+        self.threadID = threadID
+        self.name = name
+    def run(self):
+        print("Starting " + self.name)
+        task_mqtt(self.name)
+        print("Existing " + self.name)
+        
+        
+# Measuring the Distance
+def task_distance(threadName):
+    global distance_cm
+    global percent
+    
+    # defining the height of the Trash Bin
+    height = 45
+    
+    while True:
+
+        # Getting the distance value from the sensor in m
+        distance_m = sensor.distance
+        # Calculatng the distance in cm
+        distance_cm = (distance_m * 100)
+        #Calculating the Fullness of the Trash Bin in %
+        percent = ((height - distance_cm) / height ) * 100
+        print(percent, "%","full")
+        sleep(1)
+        
+
+# Creating the Image on the OLED Screen to show the status of the Trash Bin
+def task_oled(threadName):
+    global percent
+    
+    while True:     
+        while percent < 95:           
+            # Calculating the Fullness level of the Trash Bin
+            level = 32 - (0.2 * round(percent))
+             
+            image = Image.new('1', (width, height))
+            # Get drawing object to draw on image.
+            draw = ImageDraw.Draw(image)
+            # Draw a black filled box to clear the image.
+            # Load default font.
+            font = ImageFont.load_default()
+            # Write title
+            draw.text((0, 0), 'Trash Bin 1',  font=font, fill=255)
+            # Write the percentage of the fullness of the trash bin
+            draw.text((50, 10), str(round(percent)), font=font, fill=255)
+            draw.text((60, 10),  ' % full', font=font, fill =255)
+            # Draw the trash bin
+            draw.rectangle((1, 31, 31, 11), outline=255, fill=0)
+            # Draw the fullness level of the trash bin
+            draw.rectangle((1, 31, 31, level), outline=255, fill=255)
+    
+            # Display image.
+            disp.image(image)
+            disp.display()
+    
+            time.sleep(1)
+    
+        # if the fullness level is higher than 95% give a signal to empty the bin
+        else:            
+            # Calculating the Fullness level of the Trash Bin
+            level = 32 - (0.2 * round(percent))
+            
+            image = Image.new('1', (width, height))
+            # Get drawing object to draw on image.
+            draw = ImageDraw.Draw(image)
+            # Draw a black filled box to clear the image.
+            # Load default font.
+            font = ImageFont.load_default()
+            # Write title
+            draw.text((0, 0), 'Trash Bin 1',  font=font, fill=255)
+            # Write the percentage of the fullness of the trash bin
+            draw.text((50, 10), str(round(percent)), font=font, fill=255)
+            draw.text((60, 10),  ' % full', font=font, fill =255)
+            # Draw the trash bin
+            draw.rectangle((1, 31, 31, 11), outline=255, fill=0)
+            # Draw the fullness level of the trash bin
+            draw.rectangle((1, 31, 31, level), outline=255, fill=255)
+            # Write text to signal to empty the bin
+            draw.text((50, 20),  'Empty me!', font=font, fill =255)
+            
+            # Display the image for blinking signal
+            disp.image(image)
+            disp.display()        
+            time.sleep(1)
+            
+            draw.text((50, 20),  'Empty me!', font=font, fill =0)
+            
+            # Display the image for blinking signal
+            disp.image(image)
+            disp.display()
+            
+            time.sleep(0.2)
+            
+# Activating the Traffic Lights to signal the status of the Trash Bin            
+def task_lights(threadName):
+    global percent
+    
+    while True:
+        # If the Fullness of the Trash Bin is below 50% turn the green light on
+        if percent < 50:
+            signal.red.off()
+            signal.amber.off()
+            signal.green.on()
+        # If the Fullness of the Trash Bin is between 50% and 95% turn the yellow light on
+        if 50 <= percent < 95:
+            signal.red.off()
+            signal.green.off()
+            signal.amber.on()
+        # If the Fullness of the Trash Bin is over 95% turn the red light on
+        if percent >= 95:
+            signal.green.off()
+            signal.amber.off()
+            signal.red.on()
+        
+        sleep(1)
+    
+# Sending the Data of the Trash Bin to ThingSpeak
+def task_thingspeak(threadName):
+    global percent
+    global distance_cm
+    
+    while True:
+        # Send Fullness and Distance in cm to ThingSpeak
+        params = urllib.parse.urlencode({'field1': percent,'field2': distance_cm,'key':key})
+        headers = {"Content-type": "application/x-www-form-urlencoded","Accept": "text/plain"}
+        conn = http.client.HTTPConnection("api.thingspeak.com:80")
+    
+        conn.request("POST", "/update", params, headers)
+        response = conn.getresponse()
+        sleep (1)
+
+        print(response.status, response.reason)
+        data = response.read()
+        print(data)
+        sleep(1)
+
+# Publish the Data of the Trash Bin via MQTT
+def task_mqtt(threadName):
+    global percent
+    
+    while True:
+        
+        client = mqtt.Client()
+        client.connect(broker_address, 1883, 60)
+        
+        client.on_connect = on_connect
+        
+        if percent > 95:
+            client.loop_start()    #start the loop
+            # Publish Fullness of the Trash Bin
+            client.publish("/GarbageBin/Fullness","Take the Trash out!")
+        
+            print("Published")
+            
+            client.disconnect()
+            client.loop_stop()
+            
+            sleep(1)
+
+   
+
+# Create the Threads
+
+thread1 = ThreadDistance(1,"Measuring the Distance - Thread")
+thread2 = ThreadOled(2,"Showing the Status of the Trash Bin on the Display - Thread")
+thread3 = ThreadLights(3,"Signaling the Status of the Trash Bin with Traffic Lights - Thread")
+thread4 = ThreadThingSpeak(4,"Sending Data of the Trash Bin to ThingSpeak - Thread")
+thread5 = ThreadMQTT(5,"Publish Data of the Trash Bin via MQTT - Thread")
+
+# Start the Threads
+
+thread1.start()
+thread2.start()
+thread3.start()
+thread4.start()
+thread5.start()
+
+# Wait for finishing the Threads
+
+thread1.join()
+thread2.join()
+thread3.join()
+thread4.join()
+thread5.join()
+
+# Close the connection
+conn.close()
+
+# End the loop
+client.disconnect()
+client.loop_stop()
